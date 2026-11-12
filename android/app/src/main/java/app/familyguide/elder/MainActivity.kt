@@ -1,7 +1,9 @@
 package app.familyguide.elder
 
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -16,12 +18,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Elder screen: «אני צריך עזרה» → overlay permission check → create session → show code.
- * Screen share starts in Task 9; the «רואים את המסך» banner is Task 10.
+ * Elder screen: «אני צריך עזרה» → overlay permission check → create session → show code
+ * → helper joins → screen-share consent → WebRTC (video only, `signs` channel).
+ * The «רואים את המסך» banner and the sign overlay are Task 10.
  */
 class MainActivity : ComponentActivity() {
     private val client = SessionClient(wsFactory = { url -> OkHttpClientSocket(url) })
     private var createJob: Job? = null
+    private var peer: ElderPeer? = null
 
     private lateinit var helpButton: Button
     private lateinit var endButton: Button
@@ -34,6 +38,17 @@ class MainActivity : ComponentActivity() {
             if (Settings.canDrawOverlays(this)) startSession() else showStatus(R.string.overlay_denied)
         }
 
+    private val screenCapture =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val current = peer ?: return@registerForActivityResult
+            val data = result.data
+            if (result.resultCode == Activity.RESULT_OK && data != null) {
+                current.startCall(WebRtcPeerFactory(applicationContext, data))
+            } else {
+                current.screenShareDenied()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -43,11 +58,16 @@ class MainActivity : ComponentActivity() {
         codeView = findViewById(R.id.code)
         statusView = findViewById(R.id.status)
 
-        client.onPeerJoined = { showStatus(R.string.helper_joined) }
-        client.onPeerLeft = { showStatus(R.string.helper_left) }
+        client.onPeerJoined = { onHelperJoined() }
+        client.onSignal = { payload -> peer?.handleSignal(payload) }
+        client.onPeerLeft = {
+            // While sharing, stop at once; before that, keep the code as in Task 8.
+            if (peer != null) endCall(R.string.helper_left) else showStatus(R.string.helper_left)
+        }
         client.onError = { code -> showStatus(errorText(code)) }
         client.onClosed = {
             // Connection lost after the code was shown: the code is dead, go back to start.
+            closePeer()
             showIdle()
             showStatus(R.string.error_connect)
         }
@@ -58,6 +78,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        closePeer()
         client.hangup()
         super.onDestroy()
     }
@@ -112,9 +133,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The helper entered the code: ask the elder (system dialog) to share the screen. */
+    private fun onHelperJoined() {
+        if (peer != null) return
+        showStatus(R.string.helper_joined)
+        val newPeer = ElderPeer(client, ScreenShareService.control(this))
+        newPeer.onSignsMessage = { _ -> /* Task 10 draws the signs. */ }
+        newPeer.onEnded = { message ->
+            peer = null
+            showIdle()
+            if (message != null) statusView.text = message else showStatus(R.string.call_ended)
+        }
+        peer = newPeer
+        val projection = getSystemService(MediaProjectionManager::class.java)
+        screenCapture.launch(projection.createScreenCaptureIntent())
+    }
+
+    /** Stops the screen share and the peer (ElderPeer also hangs up the session). */
+    private fun closePeer() {
+        val current = peer ?: return
+        peer = null
+        current.hangup()
+    }
+
     private fun endCall(message: Int) {
         createJob?.cancel()
         createJob = null
+        closePeer()
         client.hangup()
         showIdle()
         showStatus(message)

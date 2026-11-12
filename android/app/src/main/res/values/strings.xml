@@ -11,6 +11,7 @@
     <string name="helper_joined">הקרוב התחבר.</string>
     <string name="helper_left">הקרוב יצא מהשיחה.</string>
     <string name="call_ended">השיחה הסתיימה.</string>
+    <string name="sharing_notification">משתפים את המסך</string>
 
     <string name="overlay_title">צריך הרשאה אחת</string>
     <string name="overlay_explanation">כדי שהקרוב יוכל לסמן לך על המסך איפה ללחוץ, האפליקציה צריכה את ההרשאה «הצגה מעל אפליקציות אחרות». הקרוב רק מסמן — הוא לא יכול ללחוץ במקומך.</string>
