@@ -51,7 +51,16 @@ describe("SessionStore", () => {
       results.push(store.join("000000", "1.2.3.4"));
     }
     expect(results[9].ok).toBe(false);
-    expect(results[9].error).toBe("invalid");
+    expect(results[9]).toEqual({ ok: false, error: "invalid" });
     expect(results[10]).toEqual({ ok: false, error: "rate_limited" });
+  });
+
+  it("removes an expired session once it has been reported as expired", () => {
+    let now = 1_000_000;
+    const store = new SessionStore({ now: () => now });
+    const session = store.create();
+    now += UNUSED_TTL_MS + 1;
+    expect(store.join(session.code, "h")).toEqual({ ok: false, error: "expired" });
+    expect(store.join(session.code, "h")).toEqual({ ok: false, error: "invalid" });
   });
 });

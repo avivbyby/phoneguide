@@ -5,6 +5,7 @@ export const CODE_LENGTH = 6;
 export const UNUSED_TTL_MS = 10 * 60 * 1000;
 export const RATE_LIMIT_MAX = 10;
 export const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+export const MAX_CREATE_ATTEMPTS = 100;
 
 export function generateSessionCode(randomDigit: () => number = () => crypto.randomInt(0, 10)): string {
   let code = "";
@@ -33,9 +34,15 @@ export class SessionStore {
   }
 
   create(): Session {
+    this.sweepExpired();
     let code = generateSessionCode();
+    let attempts = 1;
     while (this.sessions.has(code)) {
+      if (attempts >= MAX_CREATE_ATTEMPTS) {
+        throw new Error(`SessionStore.create: no free session code after ${MAX_CREATE_ATTEMPTS} attempts`);
+      }
       code = generateSessionCode();
+      attempts++;
     }
     const session: Session = {
       code,
@@ -60,6 +67,7 @@ export class SessionStore {
 
     if (now - session.createdAt > UNUSED_TTL_MS && session.helperJoined === false) {
       this.recordFailure(clientId, now);
+      this.sessions.delete(code);
       return { ok: false, error: "expired" };
     }
 
@@ -79,12 +87,21 @@ export class SessionStore {
   get(code: string): Session | undefined {
     const session = this.sessions.get(code);
     if (!session) return undefined;
-    if (this.isUnusedExpired(session)) return undefined;
+    if (this.isUnusedExpired(session)) {
+      this.sessions.delete(code);
+      return undefined;
+    }
     return session;
   }
 
   hasHelper(code: string): boolean {
     return this.get(code)?.helperJoined === true;
+  }
+
+  private sweepExpired(): void {
+    for (const [code, session] of this.sessions) {
+      if (this.isUnusedExpired(session)) this.sessions.delete(code);
+    }
   }
 
   private isUnusedExpired(session: Session): boolean {
@@ -95,7 +112,11 @@ export class SessionStore {
     const recent = (this.failures.get(clientId) ?? []).filter(
       (t) => now - t <= RATE_LIMIT_WINDOW_MS,
     );
-    this.failures.set(clientId, recent);
+    if (recent.length === 0) {
+      this.failures.delete(clientId);
+    } else {
+      this.failures.set(clientId, recent);
+    }
     return recent.length;
   }
 
