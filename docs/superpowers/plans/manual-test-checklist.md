@@ -6,7 +6,7 @@
 
 ## מה רץ אוטומטית (13 בנובמבר 2026)
 
-- `npm test` — 7 קבצים, 41 מבחנים, כולם עברו.
+- `npm test` — 7 קבצים, 45 מבחנים, כולם עברו.
 - `cd android && ./gradlew :app:testDebugUnitTest --rerun` — 7 מחלקות, 45 מבחנים, 0 נכשלו, 0 דולגו.
 - `./gradlew :app:assembleDebug` — נבנה APK לבדיקה (לא נשמר בגיט).
 

@@ -21,7 +21,9 @@ export function isValidCodeFormat(code: string): boolean {
 export type JoinError = "invalid" | "expired" | "already_joined" | "rate_limited";
 export type JoinOk = { ok: true; session: Session };
 export type JoinFail = { ok: false; error: JoinError };
-export type Session = { code: string; createdAt: number; helperJoined: boolean };
+// creatorClientId: the elder's client id (rate-limit bucket), used so a client
+// cannot clear its own failed joins by creating and joining its own session.
+export type Session = { code: string; createdAt: number; helperJoined: boolean; creatorClientId?: string };
 
 export class SessionStore {
   private readonly now: () => number;
@@ -32,7 +34,7 @@ export class SessionStore {
     this.now = opts?.now ?? Date.now;
   }
 
-  create(): Session {
+  create(creatorClientId?: string): Session {
     this.sweepExpired();
     let code = generateSessionCode();
     let attempts = 1;
@@ -47,6 +49,7 @@ export class SessionStore {
       code,
       createdAt: this.now(),
       helperJoined: false,
+      creatorClientId,
     };
     this.sessions.set(code, session);
     return session;
@@ -75,7 +78,10 @@ export class SessionStore {
     }
 
     session.helperJoined = true;
-    this.failures.delete(clientId);
+    // Reset only for joining someone else's session; with no stored creator, don't.
+    if (session.creatorClientId !== undefined && session.creatorClientId !== clientId) {
+      this.failures.delete(clientId);
+    }
     return { ok: true, session };
   }
 

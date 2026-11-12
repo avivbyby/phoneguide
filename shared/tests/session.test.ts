@@ -4,6 +4,7 @@ import {
   generateSessionCode,
   isValidCodeFormat,
   SessionStore,
+  RATE_LIMIT_MAX,
   UNUSED_TTL_MS,
 } from "../src/session.ts";
 
@@ -62,5 +63,52 @@ describe("SessionStore", () => {
     now += UNUSED_TTL_MS + 1;
     expect(store.join(session.code, "h")).toEqual({ ok: false, error: "expired" });
     expect(store.join(session.code, "h")).toEqual({ ok: false, error: "invalid" });
+  });
+
+  describe("failed-join reset on success", () => {
+    function wrongCode(...avoid: string[]): string {
+      for (const c of ["000000", "111111", "222222"]) if (!avoid.includes(c)) return c;
+      throw new Error("unreachable");
+    }
+
+    it("resets the joiner's failures when joining a session someone else created", () => {
+      const store = new SessionStore({ now: () => 1_000_000 });
+      const session = store.create("elder-1");
+      const bad = wrongCode(session.code);
+      for (let i = 0; i < RATE_LIMIT_MAX - 1; i++) {
+        expect(store.join(bad, "helper-1")).toEqual({ ok: false, error: "invalid" });
+      }
+      expect(store.join(session.code, "helper-1").ok).toBe(true);
+
+      // Clean slate: a full window of failures again before rate_limited.
+      for (let i = 0; i < RATE_LIMIT_MAX; i++) {
+        expect(store.join(bad, "helper-1")).toEqual({ ok: false, error: "invalid" });
+      }
+      expect(store.join(bad, "helper-1")).toEqual({ ok: false, error: "rate_limited" });
+    });
+
+    it("does not reset when the same client creates and joins its own session", () => {
+      const store = new SessionStore({ now: () => 1_000_000 });
+      const own = store.create("client-a");
+      const bad = wrongCode(own.code);
+      for (let i = 0; i < RATE_LIMIT_MAX - 1; i++) {
+        expect(store.join(bad, "client-a")).toEqual({ ok: false, error: "invalid" });
+      }
+      expect(store.join(own.code, "client-a").ok).toBe(true);
+
+      // Still at RATE_LIMIT_MAX - 1 failures: one more, then rate_limited.
+      expect(store.join(bad, "client-a")).toEqual({ ok: false, error: "invalid" });
+      expect(store.join(bad, "client-a")).toEqual({ ok: false, error: "rate_limited" });
+    });
+
+    it("does not reset when the session has no stored creator", () => {
+      const store = new SessionStore({ now: () => 1_000_000 });
+      const session = store.create();
+      const bad = wrongCode(session.code);
+      for (let i = 0; i < RATE_LIMIT_MAX - 1; i++) store.join(bad, "helper-2");
+      expect(store.join(session.code, "helper-2").ok).toBe(true);
+      expect(store.join(bad, "helper-2")).toEqual({ ok: false, error: "invalid" });
+      expect(store.join(bad, "helper-2")).toEqual({ ok: false, error: "rate_limited" });
+    });
   });
 });

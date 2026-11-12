@@ -149,7 +149,7 @@ export function attachSignaling(
       switch (msg.type) {
         case "create": {
           if (bindings.has(ws)) return;
-          const session = store.create();
+          const session = store.create(clientId);
           const code = session.code;
           const stale = rooms.get(code);
           if (stale) evictStaleRoom(code, stale);

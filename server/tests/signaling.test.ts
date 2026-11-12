@@ -304,6 +304,29 @@ describe("attachSignaling failed joins per connection", () => {
   });
 });
 
+describe("attachSignaling failed-join reset", () => {
+  it("does not reset failures when the joiner has the creator's client id (same address)", async () => {
+    // Every test client is 127.0.0.1, so the elder and helper share a client id.
+    for (let i = 0; i < RATE_LIMIT_MAX - 1; i++) {
+      const probe = await connect();
+      probe.send({ type: "join", code: "000000" });
+      expect((await probe.next()).type).toBe("error");
+    }
+    const { code } = await createSession();
+    const helper = await connect();
+    helper.send({ type: "join", code });
+    expect(await helper.next()).toEqual({ type: "joined", role: "helper" });
+
+    const bad = code === "000000" ? "111111" : "000000";
+    const a = await connect();
+    a.send({ type: "join", code: bad });
+    expect(await a.next()).toEqual({ type: "error", code: "invalid" });
+    const b = await connect();
+    b.send({ type: "join", code: bad });
+    expect(await b.next()).toEqual({ type: "error", code: "rate_limited" });
+  });
+});
+
 describe("attachSignaling clientId and X-Forwarded-For", () => {
   async function withServer(
     opts: { trustProxy?: boolean } | undefined,
