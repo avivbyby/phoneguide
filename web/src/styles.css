@@ -86,3 +86,257 @@ input:focus-visible {
   font-size: 1.25rem;
   margin: 0;
 }
+
+/* ---- Call screen: signs menu and sign layer ---- */
+
+.call-screen {
+  max-width: 48rem;
+}
+
+.sign-menu {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+
+.sign-button {
+  flex: 0 0 auto;
+  min-height: 4.5rem;
+  min-width: 7.5rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  padding: 0.75rem 1rem;
+  border: 3px solid var(--fg);
+  border-radius: 0.75rem;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.sign-button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.sign-button--clear {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.sign-button:focus-visible {
+  outline: 4px solid #ffbf00;
+  outline-offset: 3px;
+}
+
+.note-row[hidden] {
+  display: none;
+}
+
+.note-input {
+  width: 100%;
+  font-size: 1.5rem;
+  letter-spacing: normal;
+  text-align: right;
+  direction: rtl;
+}
+
+/* The video keeps its own aspect ratio, so the layer matches the picture exactly. */
+.video-stage {
+  position: relative;
+  width: 100%;
+}
+
+.video-stage video {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #000;
+  cursor: crosshair;
+}
+
+/* Clicks pass through the layer to the video underneath. */
+.sign-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.sign-motion {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  pointer-events: none;
+}
+
+.sign-marker {
+  position: relative;
+  width: 4rem;
+  height: 4rem;
+}
+
+.sign-part {
+  position: absolute;
+  display: block;
+  background: #ffbf00;
+  border: 3px solid #000;
+}
+
+.sign-label {
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 700;
+  padding: 0.2rem 0.6rem;
+  border-radius: 0.5rem;
+  white-space: nowrap;
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tap / long press / back / note: a pulsing circle. */
+.sign-motion--tap .sign-part,
+.sign-motion--long_press .sign-part,
+.sign-motion--back .sign-part,
+.sign-motion--note .sign-part {
+  inset: 0.5rem;
+  border-radius: 50%;
+  animation: sign-pulse 1s ease-in-out infinite;
+}
+
+.sign-motion--long_press .sign-part {
+  animation-duration: 2s;
+}
+
+.sign-motion--tap .sign-part + .sign-part,
+.sign-motion--long_press .sign-part + .sign-part,
+.sign-motion--back .sign-part + .sign-part,
+.sign-motion--note .sign-part + .sign-part {
+  display: none;
+}
+
+@keyframes sign-pulse {
+  0%,
+  100% {
+    transform: scale(0.7);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.6;
+  }
+}
+
+/* Scroll and swipe: chips moving in the direction of the gesture. */
+.sign-motion--scroll_up .sign-part,
+.sign-motion--scroll_down .sign-part,
+.sign-motion--swipe_right .sign-part,
+.sign-motion--swipe_left .sign-part {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.4rem;
+  top: calc(50% - 0.625rem);
+  left: calc(50% - 0.625rem);
+  animation-duration: 1.2s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.sign-motion--scroll_up .sign-part + .sign-part,
+.sign-motion--scroll_down .sign-part + .sign-part,
+.sign-motion--swipe_right .sign-part + .sign-part,
+.sign-motion--swipe_left .sign-part + .sign-part {
+  animation-delay: 0.6s;
+}
+
+.sign-motion--scroll_up .sign-part {
+  animation-name: sign-chip-up;
+}
+.sign-motion--scroll_down .sign-part {
+  animation-name: sign-chip-down;
+}
+.sign-motion--swipe_right .sign-part {
+  animation-name: sign-chip-right;
+}
+.sign-motion--swipe_left .sign-part {
+  animation-name: sign-chip-left;
+}
+
+@keyframes sign-chip-up {
+  from { transform: translateY(1.5rem); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: translateY(-1.5rem); opacity: 0; }
+}
+@keyframes sign-chip-down {
+  from { transform: translateY(-1.5rem); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: translateY(1.5rem); opacity: 0; }
+}
+@keyframes sign-chip-right {
+  from { transform: translateX(-1.5rem); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: translateX(1.5rem); opacity: 0; }
+}
+@keyframes sign-chip-left {
+  from { transform: translateX(1.5rem); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: translateX(-1.5rem); opacity: 0; }
+}
+
+/* Zoom: two lines moving apart (zoom in) or together (zoom out). */
+.sign-motion--zoom_in .sign-part,
+.sign-motion--zoom_out .sign-part {
+  width: 0.5rem;
+  height: 2.5rem;
+  top: calc(50% - 1.25rem);
+  left: calc(50% - 0.25rem);
+  border-radius: 0.25rem;
+  animation-duration: 1.2s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.sign-motion--zoom_in .sign-part {
+  animation-name: sign-zoom-in-a;
+}
+.sign-motion--zoom_in .sign-part + .sign-part {
+  animation-name: sign-zoom-in-b;
+}
+.sign-motion--zoom_out .sign-part {
+  animation-name: sign-zoom-out-a;
+}
+.sign-motion--zoom_out .sign-part + .sign-part {
+  animation-name: sign-zoom-out-b;
+}
+
+@keyframes sign-zoom-in-a {
+  from { transform: translateX(-0.3rem); }
+  to { transform: translateX(-1.6rem); }
+}
+@keyframes sign-zoom-in-b {
+  from { transform: translateX(0.3rem); }
+  to { transform: translateX(1.6rem); }
+}
+@keyframes sign-zoom-out-a {
+  from { transform: translateX(-1.6rem); }
+  to { transform: translateX(-0.3rem); }
+}
+@keyframes sign-zoom-out-b {
+  from { transform: translateX(1.6rem); }
+  to { transform: translateX(0.3rem); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sign-part {
+    animation: none !important;
+  }
+}

@@ -2,6 +2,16 @@ import type { WsClientMessage, WsServerMessage } from "@familyguide/shared";
 import { elderIosMessage, errorMessage, helperJoinViewHtml, isIosElderAttempt } from "./join.ts";
 import { createHelperPeer, disconnectMessage } from "./webrtc.ts";
 import type { DisconnectReason, HelperPeer } from "./webrtc.ts";
+import { NOTE_MAX_LENGTH, SIGN_LABELS } from "@familyguide/shared/signs";
+import type { SignKind, SignPayload } from "@familyguide/shared/signs";
+import {
+  applyLocalSign,
+  buildSignMenu,
+  clearLocalSign,
+  sendClear,
+  sendSign,
+  signFromClick,
+} from "./signs-ui.ts";
 
 const ELDER_USE_APP_MESSAGE = "כדי לקבל עזרה, פתחו את האפליקציה בטלפון האנדרואיד שלכם.";
 
@@ -52,32 +62,145 @@ function signalingUrl(): string {
   return `${protocol}//${location.host}/ws`;
 }
 
-function showCall(onHangup: () => void): HTMLVideoElement | null {
+type CallView = {
+  video: HTMLVideoElement;
+  layer: HTMLElement;
+};
+
+type CallViewOptions = {
+  onHangup: () => void;
+  /** Sends a sign on the signs channel; false if the channel is not open yet. */
+  sendSignPayload: (payload: SignPayload) => boolean;
+  sendClearSign: () => boolean;
+};
+
+const PICK_HINT = "בחרו סימן, ואז לחצו על המסך במקום הרצוי.";
+const NOTE_HINT = `כתבו הערה (עד ${NOTE_MAX_LENGTH} תווים), ואז לחצו על המסך במקום הרצוי.`;
+const NOTE_INVALID = `כתבו הערה באורך 1 עד ${NOTE_MAX_LENGTH} תווים.`;
+const CHANNEL_NOT_READY = "החיבור עוד לא מוכן לסימנים. נסו שוב בעוד רגע.";
+
+function showCall(opts: CallViewOptions): CallView | null {
   if (!app) return null;
   const section = document.createElement("section");
-  section.className = "screen";
+  section.className = "screen call-screen";
   section.dir = "rtl";
+
+  let pendingKind: SignKind | null = null;
+
+  const status = document.createElement("p");
+  status.className = "message sign-status";
+  status.setAttribute("role", "status");
+  status.textContent = PICK_HINT;
+
+  const noteRow = document.createElement("div");
+  noteRow.className = "note-row";
+  noteRow.hidden = true;
+  const noteInput = document.createElement("input");
+  noteInput.type = "text";
+  noteInput.className = "note-input";
+  noteInput.maxLength = NOTE_MAX_LENGTH;
+  noteInput.dir = "rtl";
+  noteInput.setAttribute("aria-label", SIGN_LABELS.note);
+  noteRow.append(noteInput);
+
+  const menu = buildSignMenu((kind) => {
+    pendingKind = kind;
+    menu.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.kind === kind));
+    });
+    noteRow.hidden = kind !== "note";
+    if (kind === "note") {
+      status.textContent = NOTE_HINT;
+      noteInput.focus();
+    } else {
+      status.textContent = `${SIGN_LABELS[kind]}: לחצו על המסך במקום הרצוי.`;
+    }
+  });
+
+  const resetPick = (): void => {
+    pendingKind = null;
+    noteRow.hidden = true;
+    noteInput.value = "";
+    menu.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      button.setAttribute("aria-pressed", "false");
+    });
+  };
+
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "sign-button sign-button--clear";
+  clearButton.textContent = "מחק סימן";
+  menu.append(clearButton);
+
+  const stage = document.createElement("div");
+  stage.className = "video-stage";
   const video = document.createElement("video");
   video.playsInline = true;
   video.autoplay = true;
   video.muted = true;
   video.setAttribute("playsinline", "");
   video.setAttribute("autoplay", "");
-  video.style.width = "100%";
+  const layer = document.createElement("div");
+  layer.className = "sign-layer";
+  layer.setAttribute("aria-hidden", "true");
+  stage.append(video, layer);
+
+  clearButton.addEventListener("click", () => {
+    resetPick();
+    clearLocalSign(layer);
+    status.textContent = opts.sendClearSign() ? PICK_HINT : CHANNEL_NOT_READY;
+  });
+
+  video.addEventListener("click", (event) => {
+    if (!pendingKind) return;
+    const rect = video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const payload = signFromClick(
+      pendingKind,
+      { width: rect.width, height: rect.height },
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      pendingKind === "note" ? noteInput.value : undefined,
+    );
+    if (!payload) {
+      status.textContent = NOTE_INVALID;
+      noteInput.focus();
+      return;
+    }
+    if (!opts.sendSignPayload(payload)) {
+      status.textContent = CHANNEL_NOT_READY;
+      return;
+    }
+    applyLocalSign(layer, payload);
+    resetPick();
+    status.textContent = PICK_HINT;
+  });
+
   const hangupButton = document.createElement("button");
   hangupButton.type = "button";
   hangupButton.className = "big-button";
   hangupButton.textContent = "סיום שיחה";
-  hangupButton.addEventListener("click", onHangup);
-  section.append(video, hangupButton);
+  hangupButton.addEventListener("click", opts.onHangup);
+
+  section.append(menu, noteRow, status, stage, hangupButton);
   app.replaceChildren(section);
-  return video;
+  return { video, layer };
 }
 
 function joinCall(code: string, showJoinError: (text: string) => void): void {
   const ws = new WebSocket(signalingUrl());
   let peer: HelperPeer | null = null;
+  let view: CallView | null = null;
   let finished = false;
+
+  // The elder opens the signs channel; until then there is nothing to send on.
+  const withSignsChannel = (fn: (channel: RTCDataChannel) => boolean): boolean => {
+    try {
+      return peer ? fn(peer.getSignsChannel()) : false;
+    } catch {
+      return false;
+    }
+  };
 
   const send = (msg: WsClientMessage): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
@@ -86,6 +209,8 @@ function joinCall(code: string, showJoinError: (text: string) => void): void {
   const endCall = (reason: DisconnectReason): void => {
     if (finished) return;
     finished = true;
+    if (view) clearLocalSign(view.layer);
+    if (reason === "ended") withSignsChannel(sendClear);
     peer?.hangup();
     ws.close();
     showMessage(disconnectMessage(reason));
@@ -102,15 +227,22 @@ function joinCall(code: string, showJoinError: (text: string) => void): void {
     }
     switch (msg.type) {
       case "joined": {
-        const video = showCall(() => endCall("ended"));
+        view = showCall({
+          onHangup: () => endCall("ended"),
+          sendSignPayload: (payload) => withSignsChannel((channel) => sendSign(channel, payload)),
+          sendClearSign: () => withSignsChannel(sendClear),
+        });
         peer = await createHelperPeer({
           sendSignal: (payload) => send({ type: "signal", payload }),
           sendHangup: () => send({ type: "hangup" }),
           onRemoteStream: (stream) => {
-            if (video) video.srcObject = stream;
+            if (view) view.video.srcObject = stream;
           },
           onSignsMessage: (signsMsg) => {
             if (signsMsg.type === "hangup") endCall("ended");
+            else if (signsMsg.type === "clear_sign") {
+              if (view) clearLocalSign(view.layer);
+            } else if (view) applyLocalSign(view.layer, signsMsg);
           },
           onDisconnected: (reason) => endCall(reason),
         });
