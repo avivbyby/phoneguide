@@ -19,21 +19,58 @@ function clientIdOf(req: IncomingMessage): string {
 export function attachSignaling(server: HttpServer, store: SessionStore = new SessionStore()): WebSocketServer {
   const wss = new WebSocketServer({ server, path: "/ws" });
   const rooms = new Map<string, Room>();
+  // Which session code each connection is bound to. `null` means the connection's
+  // session has ended; it may not create, join, signal or hang up again.
+  const bindings = new WeakMap<WebSocket, string | null>();
 
-  function endRoom(code: string, from: WebSocket): void {
+  function isMember(room: Room, ws: WebSocket): boolean {
+    return room.elder === ws || room.helper === ws;
+  }
+
+  function unbind(room: Room): void {
+    bindings.set(room.elder, null);
+    if (room.helper) bindings.set(room.helper, null);
+  }
+
+  // The room this connection currently belongs to, or undefined if its binding is
+  // stale (the code was ended, expired, or reused by a later session).
+  function roomOf(ws: WebSocket): { code: string; room: Room } | undefined {
+    const code = bindings.get(ws);
+    if (!code) return undefined;
     const room = rooms.get(code);
-    store.end(code);
-    if (!room) return;
+    if (!room || !isMember(room, ws)) {
+      bindings.set(ws, null);
+      return undefined;
+    }
+    return { code, room };
+  }
+
+  function endRoom(from: WebSocket): void {
+    const current = roomOf(from);
+    if (!current) return;
+    const { code, room } = current;
     rooms.delete(code);
+    store.end(code);
+    unbind(room);
     const other = room.elder === from ? room.helper : room.elder;
     send(other, { type: "peer-left" });
     room.elder.close();
     room.helper?.close();
   }
 
+  // The store expired this code and handed it out again; retire the old room
+  // without touching the store entry, which now belongs to the new session.
+  function evictStaleRoom(code: string, room: Room): void {
+    rooms.delete(code);
+    unbind(room);
+    send(room.elder, { type: "error", code: "expired" });
+    send(room.helper, { type: "peer-left" });
+    room.elder.close();
+    room.helper?.close();
+  }
+
   wss.on("connection", (ws, req) => {
     const clientId = clientIdOf(req);
-    let code: string | undefined;
 
     ws.on("message", (data) => {
       const msg = parseWsClientMessage(String(data));
@@ -41,15 +78,18 @@ export function attachSignaling(server: HttpServer, store: SessionStore = new Se
 
       switch (msg.type) {
         case "create": {
-          if (code) return;
+          if (bindings.has(ws)) return;
           const session = store.create();
-          code = session.code;
+          const code = session.code;
+          const stale = rooms.get(code);
+          if (stale) evictStaleRoom(code, stale);
           rooms.set(code, { elder: ws });
+          bindings.set(ws, code);
           send(ws, { type: "created", code });
           return;
         }
         case "join": {
-          if (code) return;
+          if (bindings.has(ws)) return;
           const result = store.join(msg.code, clientId);
           if (!result.ok) {
             send(ws, { type: "error", code: result.error });
@@ -61,29 +101,29 @@ export function attachSignaling(server: HttpServer, store: SessionStore = new Se
             send(ws, { type: "error", code: "invalid" });
             return;
           }
-          code = msg.code;
           room.helper = ws;
+          bindings.set(ws, msg.code);
           send(ws, { type: "joined", role: "helper" });
           send(room.elder, { type: "peer-joined" });
           return;
         }
         case "signal": {
-          if (!code) return;
-          const room = rooms.get(code);
-          if (!room) return;
+          const current = roomOf(ws);
+          if (!current) return;
+          const { room } = current;
           const peer = room.elder === ws ? room.helper : room.elder;
           send(peer, { type: "signal", payload: msg.payload });
           return;
         }
         case "hangup": {
-          if (code) endRoom(code, ws);
+          endRoom(ws);
           return;
         }
       }
     });
 
     ws.on("close", () => {
-      if (code) endRoom(code, ws);
+      endRoom(ws);
     });
   });
 
