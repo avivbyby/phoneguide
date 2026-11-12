@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { WebSocketServer } from "ws";
-import { SessionStore, UNUSED_TTL_MS } from "@familyguide/shared/session";
+import { RATE_LIMIT_MAX, SessionStore, UNUSED_TTL_MS } from "@familyguide/shared/session";
 import type { WsServerMessage } from "@familyguide/shared";
 import { attachSignaling } from "../src/signaling.ts";
 
@@ -210,19 +210,113 @@ describe("attachSignaling", () => {
   });
 });
 
+describe("attachSignaling unused-code expiry timer", () => {
+  async function withTtlServer(
+    ttlMs: number,
+    run: (connectTo: () => Promise<Client>) => Promise<void>,
+  ): Promise<void> {
+    const s = http.createServer();
+    const w = attachSignaling(s, new SessionStore(), { unusedTtlMs: ttlMs });
+    await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", resolve));
+    const savedPort = port;
+    port = (s.address() as AddressInfo).port;
+    try {
+      await run(connect);
+    } finally {
+      port = savedPort;
+      for (const c of clients) c.ws.terminate();
+      await new Promise<void>((resolve) => w.close(() => resolve()));
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  }
+
+  it("tells the elder the code expired, closes the connection, and the code no longer joins", async () => {
+    await withTtlServer(80, async () => {
+      const { elder, code } = await createSession();
+      expect(await elder.next()).toEqual({ type: "error", code: "expired" });
+      await elder.closed;
+
+      const helper = await connect();
+      helper.send({ type: "join", code });
+      const reply = await helper.next();
+      expect(reply.type).toBe("error");
+      expect(elder.received).toEqual([{ type: "created", code }, { type: "error", code: "expired" }]);
+    });
+  });
+
+  it("does not fire once a helper has joined", async () => {
+    await withTtlServer(80, async () => {
+      const { elder, code } = await createSession();
+      const helper = await connect();
+      helper.send({ type: "join", code });
+      expect(await helper.next()).toEqual({ type: "joined", role: "helper" });
+      expect(await elder.next()).toEqual({ type: "peer-joined" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(elder.received).not.toContainEqual({ type: "error", code: "expired" });
+      expect(elder.ws.readyState).toBe(WebSocket.OPEN);
+      expect(helper.ws.readyState).toBe(WebSocket.OPEN);
+    });
+  });
+
+  it("a stale room's timer cannot end a newer session that reused the code", async () => {
+    vi.spyOn(crypto, "randomInt").mockImplementation((() => 4) as never);
+    await withTtlServer(150, async () => {
+      const { elder: first, code } = await createSession();
+      expect(code).toBe("444444");
+      // The first elder hangs up before its timer fires; the code is reused at once.
+      first.send({ type: "hangup" });
+      await first.closed;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const { elder: second, code: again } = await createSession();
+      expect(again).toBe(code);
+      // Past the first room's deadline, before the second's.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(second.received).toEqual([{ type: "created", code }]);
+      expect(second.ws.readyState).toBe(WebSocket.OPEN);
+      const helper = await connect();
+      helper.send({ type: "join", code });
+      expect(await helper.next()).toEqual({ type: "joined", role: "helper" });
+    });
+  });
+});
+
+describe("attachSignaling failed joins per connection", () => {
+  it(`closes a connection after ${RATE_LIMIT_MAX} failed joins on it`, async () => {
+    // Fresh client ids each time would bypass the per-client window; the per-connection cap still holds.
+    const helper = await connect();
+    for (let i = 0; i < RATE_LIMIT_MAX; i++) {
+      helper.send({ type: "join", code: "000000" });
+      const reply = await helper.next();
+      expect(reply.type).toBe("error");
+    }
+    await helper.closed;
+    expect(helper.ws.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it("keeps the connection open below the cap", async () => {
+    const helper = await connect();
+    for (let i = 0; i < RATE_LIMIT_MAX - 1; i++) {
+      helper.send({ type: "join", code: "000000" });
+      await helper.next();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(helper.ws.readyState).toBe(WebSocket.OPEN);
+  });
+});
+
 describe("attachSignaling clientId and X-Forwarded-For", () => {
   async function withServer(
     opts: { trustProxy?: boolean } | undefined,
-    run: (join: (xff: string) => Promise<WsServerMessage>) => Promise<void>,
+    run: (join: (headers: Record<string, string>) => Promise<WsServerMessage>) => Promise<void>,
   ): Promise<void> {
     const s = http.createServer();
     const w = attachSignaling(s, new SessionStore(), opts);
     await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", resolve));
     const p = (s.address() as AddressInfo).port;
     const opened: WebSocket[] = [];
-    const join = (xff: string) =>
+    const join = (headers: Record<string, string>) =>
       new Promise<WsServerMessage>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${p}/ws`, { headers: { "x-forwarded-for": xff } });
+        const ws = new WebSocket(`ws://127.0.0.1:${p}/ws`, { headers });
         opened.push(ws);
         ws.once("error", reject);
         ws.once("message", (d) => resolve(JSON.parse(String(d)) as WsServerMessage));
@@ -237,22 +331,47 @@ describe("attachSignaling clientId and X-Forwarded-For", () => {
     }
   }
 
-  it("by default ignores a spoofed X-Forwarded-For for the join rate limit", async () => {
+  const xff = (v: string) => ({ "x-forwarded-for": v });
+
+  it("by default ignores a spoofed X-Forwarded-For and CF-Connecting-IP for the join rate limit", async () => {
     await withServer(undefined, async (join) => {
       for (let i = 0; i < 10; i++) {
-        expect(await join(`10.0.0.${i}`)).toEqual({ type: "error", code: "invalid" });
+        expect(await join({ ...xff(`10.0.0.${i}`), "cf-connecting-ip": `10.1.0.${i}` })).toEqual({
+          type: "error",
+          code: "invalid",
+        });
       }
-      expect(await join("10.0.0.99")).toEqual({ type: "error", code: "rate_limited" });
+      expect(await join(xff("10.0.0.99"))).toEqual({ type: "error", code: "rate_limited" });
     });
   });
 
-  it("with trustProxy uses the forwarded address as the client", async () => {
+  it("with trustProxy uses the rightmost forwarded address (added by the proxy), not the spoofable leftmost", async () => {
     await withServer({ trustProxy: true }, async (join) => {
       for (let i = 0; i < 10; i++) {
-        expect(await join("10.0.0.1")).toEqual({ type: "error", code: "invalid" });
+        // The client varies the leftmost entry; the proxy appends the real address.
+        expect(await join(xff(`6.6.6.${i}, 10.0.0.1`))).toEqual({ type: "error", code: "invalid" });
       }
-      expect(await join("10.0.0.1")).toEqual({ type: "error", code: "rate_limited" });
-      expect(await join("10.0.0.2")).toEqual({ type: "error", code: "invalid" });
+      expect(await join(xff("7.7.7.7, 10.0.0.1"))).toEqual({ type: "error", code: "rate_limited" });
+      expect(await join(xff("10.0.0.1, 10.0.0.2"))).toEqual({ type: "error", code: "invalid" });
+    });
+  });
+
+  it("with trustProxy prefers CF-Connecting-IP over X-Forwarded-For", async () => {
+    await withServer({ trustProxy: true }, async (join) => {
+      for (let i = 0; i < 10; i++) {
+        expect(await join({ ...xff(`10.0.0.${i}`), "cf-connecting-ip": "203.0.113.5" })).toEqual({
+          type: "error",
+          code: "invalid",
+        });
+      }
+      expect(await join({ ...xff("10.0.0.50"), "cf-connecting-ip": "203.0.113.5" })).toEqual({
+        type: "error",
+        code: "rate_limited",
+      });
+      expect(await join({ ...xff("10.0.0.50"), "cf-connecting-ip": "203.0.113.6" })).toEqual({
+        type: "error",
+        code: "invalid",
+      });
     });
   });
 });

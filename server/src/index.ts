@@ -15,7 +15,9 @@ async function main(): Promise<void> {
   const webRoot = process.env.WEB_ROOT ?? path.join(repoRoot, "web/dist");
   const certFile = process.env.TLS_CERT ?? path.join(repoRoot, ".certs/localhost.pem");
   const keyFile = process.env.TLS_KEY ?? path.join(repoRoot, ".certs/localhost-key.pem");
-  // Only behind a known proxy; otherwise clients could spoof X-Forwarded-For.
+  // Only behind a known proxy; otherwise clients could spoof the forwarding headers.
+  // With it off, a local tunnel (cloudflared) makes every client 127.0.0.1, so all
+  // helpers share one join rate-limit bucket. See SignalingOptions.trustProxy.
   const trustProxy = process.env.TRUST_PROXY === "1";
 
   if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {

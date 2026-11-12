@@ -223,4 +223,32 @@ class SessionClientTest {
         assertTrue(code.await().isFailure)
         assertEquals(0, closes)
     }
+
+    @Test
+    fun serverErrorBeforeCloseIsPassedToOnClosed() = runTest {
+        val reasons = mutableListOf<String?>()
+        client.onClosed = { reasons += it }
+        val code = async { client.createSession() }
+        runCurrent()
+        socket.receive("""{ "type":"created", "code":"654321" }""")
+        code.await()
+
+        // The server tells the elder the unused code expired, then closes.
+        socket.receive("""{ "type":"error", "code":"expired" }""")
+        socket.drop()
+        assertEquals(listOf<String?>("expired"), reasons)
+    }
+
+    @Test
+    fun plainDropAfterCreatedHasNoServerError() = runTest {
+        val reasons = mutableListOf<String?>()
+        client.onClosed = { reasons += it }
+        val code = async { client.createSession() }
+        runCurrent()
+        socket.receive("""{ "type":"created", "code":"654321" }""")
+        code.await()
+
+        socket.drop()
+        assertEquals(listOf<String?>(null), reasons)
+    }
 }

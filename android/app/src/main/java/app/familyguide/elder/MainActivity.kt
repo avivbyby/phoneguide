@@ -85,11 +85,13 @@ class MainActivity : ComponentActivity() {
             if (peer != null) endCall(R.string.helper_left) else showStatus(R.string.helper_left)
         }
         client.onError = { code -> showStatus(errorText(code)) }
-        client.onClosed = {
+        client.onClosed = { lastError ->
             // Connection lost after the code was shown: the code is dead, go back to start.
+            // Keep a specific server reason (e.g. «הקוד כבר לא בתוקף…» on expiry) instead of
+            // the generic connection error.
             closePeer()
             showIdle()
-            showStatus(R.string.error_connect)
+            showStatus(lastError?.let { errorText(it) } ?: R.string.error_connect)
         }
 
         helpButton.setOnClickListener { onHelpClicked() }

@@ -2,9 +2,12 @@ package app.familyguide.elder
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.Display
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import org.webrtc.DataChannel
@@ -57,6 +60,11 @@ private class WebRtcPeer(
     private var textureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
+    private val displays = context.getSystemService(DisplayManager::class.java)
+    private val sizeTracker = CaptureSizeTracker(CAPTURE_FPS, ::realScreenSize) { w, h, fps ->
+        if (!closed) capturer.changeCaptureFormat(w, h, fps)
+    }
+    private var displayListener: DisplayManager.DisplayListener? = null
 
     init {
         PeerConnectionFactory.initialize(
@@ -82,8 +90,11 @@ private class WebRtcPeer(
         val helper = SurfaceTextureHelper.create("ScreenCapture", egl.eglBaseContext)
         val source = factory.createVideoSource(/* isScreencast = */ true)
         capturer.initialize(helper, context, source.capturerObserver)
-        val metrics = context.resources.displayMetrics
-        capturer.startCapture(metrics.widthPixels, metrics.heightPixels, CAPTURE_FPS)
+        // Real full-screen size (incl. system bars), the frame SignOverlay maps signs to;
+        // resources.displayMetrics is only the app area and would offset the signs.
+        val size = sizeTracker.initial()
+        capturer.startCapture(size.width, size.height, CAPTURE_FPS)
+        watchRotation()
         val track = factory.createVideoTrack("screen", source)
         pc.addTrack(track, listOf("screen"))
         textureHelper = helper
@@ -148,9 +159,32 @@ private class WebRtcPeer(
         pc.addIceCandidate(IceCandidate(candidate.sdpMid ?: "", candidate.sdpMLineIndex, candidate.candidate))
     }
 
+    /** On rotation the real size swaps; re-size the capture so the helper's picture is not letterboxed. */
+    private fun watchRotation() {
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY && !closed) sizeTracker.onDisplayChanged()
+            }
+
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+        }
+        displays.registerDisplayListener(listener, main)
+        displayListener = listener
+    }
+
+    @Suppress("DEPRECATION") // getRealMetrics: works on every API level from a non-visual context.
+    private fun realScreenSize(): ScreenSize {
+        val metrics = DisplayMetrics()
+        displays.getDisplay(Display.DEFAULT_DISPLAY).getRealMetrics(metrics)
+        return ScreenSize(metrics.widthPixels, metrics.heightPixels)
+    }
+
     override fun close() {
         if (closed) return
         closed = true
+        displayListener?.let { displays.unregisterDisplayListener(it) }
+        displayListener = null
         try {
             capturer.stopCapture()
         } catch (_: InterruptedException) {

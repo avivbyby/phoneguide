@@ -17,15 +17,21 @@ class SessionClient(
     var onPeerLeft: () -> Unit = {}
     var onError: (code: String) -> Unit = {}
 
-    /** The connection dropped (network or server close) after the code was shown. Not fired for [hangup]. */
-    var onClosed: () -> Unit = {}
+    /**
+     * The connection dropped (network or server close) after the code was shown. Not fired for [hangup].
+     * [lastError] is the server's last `error` code on this connection (e.g. "expired" when the
+     * unused code timed out), or null for a plain drop; the caller should keep that specific text.
+     */
+    var onClosed: (lastError: String?) -> Unit = {}
 
     private var socket: ClientSocket? = null
     private var pendingCode: CompletableDeferred<String>? = null
+    private var lastError: String? = null
 
     /** Sends {"type":"create"} and returns the 6-digit code; throws if no `created` arrives. */
     suspend fun createSession(): String {
         close()
+        lastError = null
         val deferred = CompletableDeferred<String>()
         pendingCode = deferred
         val ws = wsFactory(url)
@@ -73,6 +79,7 @@ class SessionClient(
                     }
                 }
                 is WsServerMessage.Error -> {
+                    lastError = msg.code
                     onError(msg.code)
                     pendingCode?.let {
                         pendingCode = null
@@ -97,7 +104,7 @@ class SessionClient(
                 pending.completeExceptionally(SessionException("closed"))
             } else {
                 // The code was already shown and can no longer work.
-                onClosed.invoke()
+                onClosed.invoke(lastError)
             }
         }
     }
