@@ -209,3 +209,50 @@ describe("attachSignaling", () => {
     expect(await third.next()).toEqual({ type: "error", code: "already_joined" });
   });
 });
+
+describe("attachSignaling clientId and X-Forwarded-For", () => {
+  async function withServer(
+    opts: { trustProxy?: boolean } | undefined,
+    run: (join: (xff: string) => Promise<WsServerMessage>) => Promise<void>,
+  ): Promise<void> {
+    const s = http.createServer();
+    const w = attachSignaling(s, new SessionStore(), opts);
+    await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", resolve));
+    const p = (s.address() as AddressInfo).port;
+    const opened: WebSocket[] = [];
+    const join = (xff: string) =>
+      new Promise<WsServerMessage>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${p}/ws`, { headers: { "x-forwarded-for": xff } });
+        opened.push(ws);
+        ws.once("error", reject);
+        ws.once("message", (d) => resolve(JSON.parse(String(d)) as WsServerMessage));
+        ws.once("open", () => ws.send(JSON.stringify({ type: "join", code: "000000" })));
+      });
+    try {
+      await run(join);
+    } finally {
+      for (const ws of opened) ws.terminate();
+      await new Promise<void>((resolve) => w.close(() => resolve()));
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+  }
+
+  it("by default ignores a spoofed X-Forwarded-For for the join rate limit", async () => {
+    await withServer(undefined, async (join) => {
+      for (let i = 0; i < 10; i++) {
+        expect(await join(`10.0.0.${i}`)).toEqual({ type: "error", code: "invalid" });
+      }
+      expect(await join("10.0.0.99")).toEqual({ type: "error", code: "rate_limited" });
+    });
+  });
+
+  it("with trustProxy uses the forwarded address as the client", async () => {
+    await withServer({ trustProxy: true }, async (join) => {
+      for (let i = 0; i < 10; i++) {
+        expect(await join("10.0.0.1")).toEqual({ type: "error", code: "invalid" });
+      }
+      expect(await join("10.0.0.1")).toEqual({ type: "error", code: "rate_limited" });
+      expect(await join("10.0.0.2")).toEqual({ type: "error", code: "invalid" });
+    });
+  });
+});

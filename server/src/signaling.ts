@@ -10,14 +10,31 @@ function send(ws: WebSocket | undefined, msg: WsServerMessage): void {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-function clientIdOf(req: IncomingMessage): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
-  return first || req.socket.remoteAddress || "127.0.0.1";
+export type SignalingOptions = {
+  // Trust X-Forwarded-For for the client address (rate-limit bucket). Only enable
+  // behind a known proxy: a direct client can set this header to anything.
+  trustProxy?: boolean;
+};
+
+// Signaling messages (SDP, ICE candidates) are a few KB at most.
+const MAX_PAYLOAD_BYTES = 64 * 1024;
+
+function clientIdOf(req: IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = req.headers["x-forwarded-for"];
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress || "127.0.0.1";
 }
 
-export function attachSignaling(server: HttpServer, store: SessionStore = new SessionStore()): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: "/ws" });
+export function attachSignaling(
+  server: HttpServer,
+  store: SessionStore = new SessionStore(),
+  opts: SignalingOptions = {},
+): WebSocketServer {
+  const trustProxy = opts.trustProxy ?? false;
+  const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MAX_PAYLOAD_BYTES });
   const rooms = new Map<string, Room>();
   // Which session code each connection is bound to. `null` means the connection's
   // session has ended; it may not create, join, signal or hang up again.
@@ -70,7 +87,7 @@ export function attachSignaling(server: HttpServer, store: SessionStore = new Se
   }
 
   wss.on("connection", (ws, req) => {
-    const clientId = clientIdOf(req);
+    const clientId = clientIdOf(req, trustProxy);
 
     ws.on("message", (data) => {
       const msg = parseWsClientMessage(String(data));
