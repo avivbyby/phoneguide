@@ -1,10 +1,13 @@
 package app.familyguide.elder
 
 import android.app.Activity
+import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -47,6 +50,16 @@ class MainActivity : ComponentActivity() {
             } else {
                 current.screenShareDenied()
             }
+        }
+
+    /** Answer to POST_NOTIFICATIONS; a refusal still continues to the screen-share dialog. */
+    private var onNotificationAnswer: ((Boolean) -> Unit)? = null
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val answer = onNotificationAnswer
+            onNotificationAnswer = null
+            answer?.invoke(granted)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -145,6 +158,23 @@ class MainActivity : ComponentActivity() {
             if (message != null) statusView.text = message else showStatus(R.string.call_ended)
         }
         peer = newPeer
+        // Android 13+: ask for notifications first so «משתפים את המסך» is visible.
+        // Refusing notifications does not stop the share (unlike refusing the capture).
+        NotificationPermissionGate.beforeScreenShare(
+            sdkInt = Build.VERSION.SDK_INT,
+            isGranted = Build.VERSION.SDK_INT < NotificationPermissionGate.TIRAMISU ||
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED,
+            request = { onResult ->
+                onNotificationAnswer = onResult
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            },
+            proceed = { askScreenCapture() },
+        )
+    }
+
+    private fun askScreenCapture() {
+        if (peer == null) return // the call ended while the permission dialog was open
         val projection = getSystemService(MediaProjectionManager::class.java)
         screenCapture.launch(projection.createScreenCaptureIntent())
     }
