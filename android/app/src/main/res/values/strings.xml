@@ -24,6 +24,7 @@
     <string name="error_expired">הקוד כבר לא בתוקף. לוחצים שוב על «אני צריך עזרה» לקוד חדש.</string>
     <string name="error_generic">משהו השתבש. מנסים שוב.</string>
 
-    <!-- Task 10: banner while the helper sees the screen. -->
+    <!-- Overlay banner while the helper sees the screen; «סיום» ends the call. -->
     <string name="sharing_banner">רואים את המסך</string>
+    <string name="overlay_end">סיום</string>
 </resources>

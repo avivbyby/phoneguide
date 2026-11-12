@@ -22,13 +22,15 @@ import kotlinx.coroutines.launch
 
 /**
  * Elder screen: «אני צריך עזרה» → overlay permission check → create session → show code
- * → helper joins → screen-share consent → WebRTC (video only, `signs` channel).
- * The «רואים את המסך» banner and the sign overlay are Task 10.
+ * → helper joins → screen-share consent → WebRTC (video only, `signs` channel)
+ * → [SignOverlay]: the permanent «רואים את המסך» banner with «סיום», and the helper's signs.
+ * Signs are only drawn; nothing in the app performs a touch for the helper.
  */
 class MainActivity : ComponentActivity() {
     private val client = SessionClient(wsFactory = { url -> OkHttpClientSocket(url) })
     private var createJob: Job? = null
     private var peer: ElderPeer? = null
+    private var overlay: SignOverlay? = null
 
     private lateinit var helpButton: Button
     private lateinit var endButton: Button
@@ -46,6 +48,11 @@ class MainActivity : ComponentActivity() {
             val current = peer ?: return@registerForActivityResult
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
+                // The banner must be visible for the whole share; no banner, no call.
+                if (!showOverlay()) {
+                    endCall(R.string.overlay_denied)
+                    return@registerForActivityResult
+                }
                 current.startCall(WebRtcPeerFactory(applicationContext, data))
             } else {
                 current.screenShareDenied()
@@ -151,9 +158,10 @@ class MainActivity : ComponentActivity() {
         if (peer != null) return
         showStatus(R.string.helper_joined)
         val newPeer = ElderPeer(client, ScreenShareService.control(this))
-        newPeer.onSignsMessage = { _ -> /* Task 10 draws the signs. */ }
+        newPeer.onSignsMessage = { json -> onSignsMessage(json) }
         newPeer.onEnded = { message ->
             peer = null
+            dismissOverlay()
             showIdle()
             if (message != null) statusView.text = message else showStatus(R.string.call_ended)
         }
@@ -179,8 +187,30 @@ class MainActivity : ComponentActivity() {
         screenCapture.launch(projection.createScreenCaptureIntent())
     }
 
+    /** Draws signs; `hangup` from the helper ends the call. Anything else is ignored. */
+    private fun onSignsMessage(json: String) {
+        when (val msg = parseChannelMessage(json)) {
+            is ChannelMsg.Sign -> overlay?.showSign(msg)
+            ChannelMsg.Clear -> overlay?.clearSign()
+            ChannelMsg.Hangup -> endCall(R.string.helper_left)
+            null -> Unit // unknown or control message (e.g. remote_tap): never acted on
+        }
+    }
+
+    private fun showOverlay(): Boolean {
+        if (!Settings.canDrawOverlays(this)) return false
+        val current = overlay ?: SignOverlay(this) { endCall(R.string.call_ended) }.also { overlay = it }
+        return current.show()
+    }
+
+    private fun dismissOverlay() {
+        overlay?.dismiss()
+        overlay = null
+    }
+
     /** Stops the screen share and the peer (ElderPeer also hangs up the session). */
     private fun closePeer() {
+        dismissOverlay()
         val current = peer ?: return
         peer = null
         current.hangup()
