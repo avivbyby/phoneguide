@@ -1,0 +1,10 @@
+{
+  "name": "@familyguide/shared",
+  "type": "module",
+  "main": "src/protocol.ts",
+  "exports": {
+    ".": "./src/protocol.ts",
+    "./signs": "./src/signs.ts",
+    "./session": "./src/session.ts"
+  }
+}
