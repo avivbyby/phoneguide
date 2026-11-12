@@ -1,4 +1,3 @@
-// @ts-expect-error Node built-in; this workspace has no @types/node
 import crypto from "node:crypto";
 
 export const CODE_LENGTH = 6;

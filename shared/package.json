@@ -6,5 +6,8 @@
     ".": "./src/protocol.ts",
     "./signs": "./src/signs.ts",
     "./session": "./src/session.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
   }
 }
