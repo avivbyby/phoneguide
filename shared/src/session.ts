@@ -1,0 +1,109 @@
+// @ts-expect-error Node built-in; this workspace has no @types/node
+import crypto from "node:crypto";
+
+export const CODE_LENGTH = 6;
+export const UNUSED_TTL_MS = 10 * 60 * 1000;
+export const RATE_LIMIT_MAX = 10;
+export const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+
+export function generateSessionCode(randomDigit: () => number = () => crypto.randomInt(0, 10)): string {
+  let code = "";
+  for (let i = 0; i < CODE_LENGTH; i++) {
+    code += String(randomDigit());
+  }
+  return code;
+}
+
+export function isValidCodeFormat(code: string): boolean {
+  return /^\d{6}$/.test(code);
+}
+
+export type JoinError = "invalid" | "expired" | "already_joined" | "rate_limited";
+export type JoinOk = { ok: true; session: Session };
+export type JoinFail = { ok: false; error: JoinError };
+export type Session = { code: string; createdAt: number; helperJoined: boolean };
+
+export class SessionStore {
+  private readonly now: () => number;
+  private readonly sessions = new Map<string, Session>();
+  private readonly failures = new Map<string, number[]>();
+
+  constructor(opts?: { now?: () => number }) {
+    this.now = opts?.now ?? Date.now;
+  }
+
+  create(): Session {
+    let code = generateSessionCode();
+    while (this.sessions.has(code)) {
+      code = generateSessionCode();
+    }
+    const session: Session = {
+      code,
+      createdAt: this.now(),
+      helperJoined: false,
+    };
+    this.sessions.set(code, session);
+    return session;
+  }
+
+  join(code: string, clientId: string): JoinOk | JoinFail {
+    const now = this.now();
+    if (this.failureCount(clientId, now) >= RATE_LIMIT_MAX) {
+      return { ok: false, error: "rate_limited" };
+    }
+
+    const session = this.sessions.get(code);
+    if (!isValidCodeFormat(code) || !session) {
+      this.recordFailure(clientId, now);
+      return { ok: false, error: "invalid" };
+    }
+
+    if (now - session.createdAt > UNUSED_TTL_MS && session.helperJoined === false) {
+      this.recordFailure(clientId, now);
+      return { ok: false, error: "expired" };
+    }
+
+    if (session.helperJoined) {
+      return { ok: false, error: "already_joined" };
+    }
+
+    session.helperJoined = true;
+    this.failures.delete(clientId);
+    return { ok: true, session };
+  }
+
+  end(code: string): void {
+    this.sessions.delete(code);
+  }
+
+  get(code: string): Session | undefined {
+    const session = this.sessions.get(code);
+    if (!session) return undefined;
+    if (this.isUnusedExpired(session)) return undefined;
+    return session;
+  }
+
+  hasHelper(code: string): boolean {
+    return this.get(code)?.helperJoined === true;
+  }
+
+  private isUnusedExpired(session: Session): boolean {
+    return session.helperJoined === false && this.now() - session.createdAt > UNUSED_TTL_MS;
+  }
+
+  private failureCount(clientId: string, now: number): number {
+    const recent = (this.failures.get(clientId) ?? []).filter(
+      (t) => now - t <= RATE_LIMIT_WINDOW_MS,
+    );
+    this.failures.set(clientId, recent);
+    return recent.length;
+  }
+
+  private recordFailure(clientId: string, now: number): void {
+    const recent = (this.failures.get(clientId) ?? []).filter(
+      (t) => now - t <= RATE_LIMIT_WINDOW_MS,
+    );
+    recent.push(now);
+    this.failures.set(clientId, recent);
+  }
+}
