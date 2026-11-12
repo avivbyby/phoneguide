@@ -46,6 +46,11 @@ class MainActivity : ComponentActivity() {
         client.onPeerJoined = { showStatus(R.string.helper_joined) }
         client.onPeerLeft = { showStatus(R.string.helper_left) }
         client.onError = { code -> showStatus(errorText(code)) }
+        client.onClosed = {
+            // Connection lost after the code was shown: the code is dead, go back to start.
+            showIdle()
+            showStatus(R.string.error_connect)
+        }
 
         helpButton.setOnClickListener { onHelpClicked() }
         endButton.setOnClickListener { endCall(R.string.call_ended) }

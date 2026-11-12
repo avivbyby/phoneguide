@@ -33,6 +33,10 @@ private class FakeSocket : ClientSocket {
     fun drop() {
         listener!!.onClosed()
     }
+
+    fun fail(error: Throwable) {
+        listener!!.onFailure(error)
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -157,5 +161,66 @@ class SessionClientTest {
             fail("expected IllegalArgumentException")
         } catch (_: IllegalArgumentException) {
         }
+    }
+
+    @Test
+    fun socketClosedAfterCreatedFiresOnClosedOnce() = runTest {
+        var closes = 0
+        client.onClosed = { closes++ }
+        val code = async { client.createSession() }
+        runCurrent()
+        socket.receive("""{ "type":"created", "code":"654321" }""")
+        code.await()
+
+        socket.drop()
+        socket.drop()
+        socket.fail(RuntimeException("late failure after close"))
+        assertEquals(1, closes)
+
+        // The dead socket is forgotten: nothing is sent into it.
+        val before = socket.sent.size
+        client.sendSignal("""{"type":"offer","sdp":"v=0"}""")
+        assertEquals(before, socket.sent.size)
+    }
+
+    @Test
+    fun socketFailureAfterCreatedFiresOnClosed() = runTest {
+        var closes = 0
+        client.onClosed = { closes++ }
+        val code = async { client.createSession() }
+        runCurrent()
+        socket.receive("""{ "type":"created", "code":"654321" }""")
+        code.await()
+
+        socket.fail(RuntimeException("network down"))
+        assertEquals(1, closes)
+    }
+
+    @Test
+    fun deliberateHangupDoesNotFireOnClosedOrOnError() = runTest {
+        var closes = 0
+        val errors = mutableListOf<String>()
+        client.onClosed = { closes++ }
+        client.onError = { errors += it }
+        val code = async { client.createSession() }
+        runCurrent()
+        socket.receive("""{ "type":"created", "code":"654321" }""")
+        code.await()
+
+        client.hangup()
+        socket.drop() // the transport confirms the close afterwards
+        assertEquals(0, closes)
+        assertEquals(emptyList<String>(), errors)
+    }
+
+    @Test
+    fun socketClosedBeforeCreatedDoesNotFireOnClosed() = runTest {
+        var closes = 0
+        client.onClosed = { closes++ }
+        val code = async { runCatching { client.createSession() } }
+        runCurrent()
+        socket.drop()
+        assertTrue(code.await().isFailure)
+        assertEquals(0, closes)
     }
 }

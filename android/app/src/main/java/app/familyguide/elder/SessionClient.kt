@@ -17,6 +17,9 @@ class SessionClient(
     var onPeerLeft: () -> Unit = {}
     var onError: (code: String) -> Unit = {}
 
+    /** The connection dropped (network or server close) after the code was shown. Not fired for [hangup]. */
+    var onClosed: () -> Unit = {}
+
     private var socket: ClientSocket? = null
     private var pendingCode: CompletableDeferred<String>? = null
 
@@ -84,11 +87,17 @@ class SessionClient(
         }
 
         override fun onClosed() {
+            // Ignore stale sockets, repeats, and the close that follows our own hangup().
             if (socket !== ws) return
             socket = null
-            pendingCode?.let {
+            val pending = pendingCode
+            if (pending != null) {
+                // Still waiting for `created`: createSession() reports the failure.
                 pendingCode = null
-                it.completeExceptionally(SessionException("closed"))
+                pending.completeExceptionally(SessionException("closed"))
+            } else {
+                // The code was already shown and can no longer work.
+                onClosed.invoke()
             }
         }
     }
